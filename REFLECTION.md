@@ -1,21 +1,139 @@
-# Reflection
+# CA2 Reflection
 
-## 1. Fractional part decision
-The scanner decides that a '.' begins a fractional part only when it is followed by a digit. This is implemented at **src/scanner.rs:133** (`if self.peek() == '.' && self.peek_next().is_ascii_digit() {`). For the input `5.` the scanner consumes the '5' as a digit, sees the '.' but notes that the next character is not a digit (it is either EOF or whitespace), so it does **not** consume the dot. It then emits a `NUMBER` token with lexeme `"5"` and leaves the '.' in the input stream. The '.' will later be recognized as a stray character and trigger the error `[line N] Error: Character is not part of any token.` This matches **section 1.4** of the language spec, which states that a number is “one or more digits, optionally followed by `.` and one or more digits” and explicitly notes that `.` alone “does not scan as anything” and should cause the scanner to report that error.
+## 1. Dangling `else` resolution
 
-## 2. Line‑counter changes and EOF line
-The line counter is modified in two places:
-- **src/scanner.rs:111** inside `string()` when a newline is encountered within a string literal (`if self.peek() == '\n' { self.line += 1; }`).
-- **src/scanner.rs:222** inside `skip_whitespace()` when a newline is skipped between tokens (`if self.peek() == '\n' { self.line += 1; }`).
+**Lines in `if_statement` that resolve the dangling `else`:** `src/parser.rs:155-171`
 
-For a file that ends in two blank lines after the last real token, `skip_whitespace()` consumes both newlines, incrementing the line counter twice, but then detects `at_end()` and breaks out of the main loop before scanning another token. The `EOF` token is added via `add_eof()`, which uses `self.last_token_line` — the line of the last token that was actually added (recorded at **src/scanner.rs:164** each time `add()` is called). Therefore the `EOF` token carries the line of the **last real token**, not the line of the file’s final newline. Section 6.1 requires this because “a trailing newline left behind by an editor must not move a line number”; the EOF line should reflect the position of the last meaningful token, not irrelevant trailing whitespace.
+The `if_statement` function (lines 155-171) parses the `if` condition, then the `then_branch` by calling `self.statement()?`, and then checks for an optional `else` branch with `if self.matches(&[TokenType::Else])`. If `else` is present, it parses another statement as the `else_branch`.
 
-## 3. Test failure and fix
-I initially failed the test **tests/phase-1/invalid/unterminated_string.kobo**. The problem was that the scanner reported the *“String is never closed.”* error at the line where EOF was reached, not at the line where the string started.  
-- **Wrong commit**: `ba73cb9` (Buggy: string error reports at EOF line instead of start line). At this commit, the relevant line was **src/scanner.rs:118**: `self.error(self.line, "String is never closed.");`.  
-- **Fixed commit**: `d111181` (Fix: string error reports at start line, not EOF line). At this commit, I added **src/scanner.rs:108**: `let start_line = self.line;` to record the opening‑quote line, and changed **src/scanner.rs:118** to `self.error(start_line, "String is never closed.");`.  
+**Why recursion decides it rather than the grammar:**
 
-My misunderstanding was that I thought the error should be reported where the scanner detected the missing closing quote (i.e., at EOF). The spec, however, explicitly states in section 1.5: “An unterminated string is an error reported at the line where the string *opened*.” Recording the starting line fixed the issue, and the test now passes.
+The grammar in section 3.1 is ambiguous:
+```
+ifStmt → "if" "(" expression ")" statement ( "else" statement )?
+```
 
----  
-*All line numbers refer to src/scanner.rs in the commit referenced.*
+It doesn't specify which `if` an `else` belongs to when nested. However, recursive descent naturally resolves this because the inner `if_statement` call consumes the `else` before returning. When parsing `if (false) if (true) print "a"; else print "b";`:
+
+1. Outer `if_statement` parses condition `false`
+2. Parses then_branch by calling `statement()`, which calls `if_statement` again
+3. Inner `if_statement` parses condition `true`
+4. Parses then_branch: `print "a";`
+5. Sees `else`, consumes it, parses else_branch: `print "b";`
+6. Inner `if_statement` returns with `else_branch = Some(print "b")`
+7. Outer `if_statement` sees no `else` (already consumed), so its `else_branch = None`
+
+**What the parser prints for `if (false) if (true) print "a"; else print "b";`:**
+```
+(if false (if true (print "a") (print "b")))
+```
+
+**What it would print if `else` bound to outer `if`:**
+```
+(if false (if true (print "a")) (print "b"))
+```
+
+The current behavior binds the `else` to the nearest (inner) `if`, which is the standard behavior in most languages and falls out of recursive descent for free.
+
+---
+
+## 2. Assignment left-side check
+
+**Line in `assignment` where left side is checked:** `src/parser.rs:219`
+
+```rust
+if let Expr::Variable { name, .. } = &expr {
+```
+
+**Why this check cannot happen before the left side is parsed:**
+
+The assignment rule in section 3.2 is:
+```
+assignment → IDENTIFIER "=" assignment | logic_or
+```
+
+This is not LL(1) because when the parser sees an identifier (`a`), it cannot know with only one token of lookahead whether it's:
+- A variable reference (part of `logic_or` → `or` → `and` → ... → `primary`)
+- The left side of an assignment (`a = ...`)
+
+Both paths start identically. The parser must parse the left side as a general expression first (which could be `a`, `a.b`, `f()`, etc.), then check if the next token is `=`. If it is, the left side must be a bare identifier (`Variable` node); otherwise it's a syntax error.
+
+**Message from section 5.1 that `1 = 2;` produces:**
+```
+[line 1] Error at '=': Cannot assign to this expression.
+```
+
+---
+
+## 3. Synchronisation tokens
+
+**Function `synchronise` location:** `src/parser.rs:430-460`
+
+**Tokens the synchroniser stops on (when positioned at them):**
+- `fun` — starts a function declaration
+- `var` — starts a variable declaration  
+- `if` — starts an if statement
+- `while` — starts a while statement
+- `print` — starts a print statement
+- `return` — starts a return statement
+
+**Also stops after consuming:** `;` (semicolon)
+
+**Also consumes (to exit broken scopes):** `}` (RBrace) and `)` (RParen)
+
+**Why these tokens:** They are the only tokens that can legally begin a declaration or statement at the top level or block level (section 3.1). By synchronizing to these points, the parser recovers from an error and resumes parsing at the next valid statement boundary, preventing one error from cascading into many.
+
+**Test whose output changes if `synchronise` call is deleted:** `tests/phase-2/invalid/expect_semicolon_after_value.kobo`
+
+**Input:**
+```kobo
+print 1
+print 2;
+```
+
+**Current output (with synchronise):**
+```
+[line 2] Error at 'print': Expect ';' after value.
+(print 2)
+```
+
+**Output without synchronise (call deleted):**
+The parser would not recover after the missing semicolon on line 1. It would continue parsing `print 2;` as part of the same broken expression, likely producing multiple errors or a completely different AST, and the second `print 2;` would not be parsed as a valid statement. The single error would cascade into many.
+
+---
+
+## 4. Commit history anchors
+
+*To be filled in with your actual commit hashes:*
+
+**Commit where `if_statement` dangling else was wrong:** `[HASH_1]`
+```
+[line as it stood then]
+```
+
+**Commit where `if_statement` was fixed:** `[HASH_2]`
+```
+[line as it stands now]
+```
+
+**Commit where `assignment` left-side check was wrong:** `[HASH_3]`
+```
+[line as it stood then]
+```
+
+**Commit where `assignment` check was fixed:** `[HASH_4]`
+```
+[line as it stands now]
+```
+
+**Commit where `synchronise` was wrong:** `[HASH_5]`
+```
+[line as it stood then]
+```
+
+**Commit where `synchronise` was fixed:** `[HASH_6]`
+```
+[line as it stands now]
+```
+
+*Use `git log -p --follow src/parser.rs` to find these commits. Both commits for each question must be your own and at or before the deadline.*
