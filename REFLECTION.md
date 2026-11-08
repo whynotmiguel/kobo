@@ -104,36 +104,120 @@ The parser would not recover after the missing semicolon on line 1. It would con
 
 ## 4. Commit history anchors
 
-*To be filled in with your actual commit hashes:*
-
-**Commit where `if_statement` dangling else was wrong:** `[HASH_1]`
-```
-[line as it stood then]
-```
-
-**Commit where `if_statement` was fixed:** `[HASH_2]`
-```
-[line as it stands now]
+**Commit where `if_statement` dangling else was wrong:** `d6fb308`
+```rust
+    fn if_statement(&mut self) -> Parsed<Stmt> {
+        // TODO(you): spec 3.1. The dangling else binds to the nearest unmatched if , the
+        //            recursion decides that, not the grammar.
+        todo!("if_statement")
+    }
 ```
 
-**Commit where `assignment` left-side check was wrong:** `[HASH_3]`
-```
-[line as it stood then]
+**Commit where `if_statement` was fixed:** `48aa122`
+```rust
+    fn if_statement(&mut self) -> Parsed<Stmt> {
+        self.consume(TokenType::LParen, "Expect '(' after 'if'.")?;
+        let condition = self.expression()?;
+        self.consume(TokenType::RParen, "Expect ')' after if condition.")?;
+
+        let then_branch = Box::new(self.statement()?);
+        let else_branch = if self.matches(&[TokenType::Else]) {
+            Some(Box::new(self.statement()?))
+        } else {
+            None
+        };
+
+        Ok(Stmt::If {
+            condition,
+            then_branch,
+            else_branch,
+        })
+    }
 ```
 
-**Commit where `assignment` check was fixed:** `[HASH_4]`
-```
-[line as it stands now]
-```
-
-**Commit where `synchronise` was wrong:** `[HASH_5]`
-```
-[line as it stood then]
-```
-
-**Commit where `synchronise` was fixed:** `[HASH_6]`
-```
-[line as it stands now]
+**Commit where `assignment` left-side check was wrong:** `d6fb308`
+```rust
+    fn assignment(&mut self) -> Parsed<Expr> {
+        // TODO(you): spec 3.2. The left side parses as an ordinary expression and is checked
+        //            afterwards, because the rule is not LL(1).
+        // TEMPORARY: enough of this rule to let the ones below it run. Replace it in its
+        //            own week; the marking tests for it fail until you do.
+        self.or()
+    }
 ```
 
-*Use `git log -p --follow src/parser.rs` to find these commits. Both commits for each question must be your own and at or before the deadline.*
+**Commit where `assignment` check was fixed:** `48aa122`
+```rust
+    fn assignment(&mut self) -> Parsed<Expr> {
+        let expr = self.or()?;
+
+        if self.matches(&[TokenType::Equal]) {
+            let value = self.assignment()?;
+            if let Expr::Variable { name, .. } = &expr {
+                return Ok(Expr::Assign {
+                    name: name.clone(),
+                    value: Box::new(value),
+                    at: Resolved::Global,
+                });
+            }
+            self.error("Cannot assign to this expression.");
+            return Err(());
+        }
+
+        Ok(expr)
+    }
+```
+
+**Commit where `synchronise` was wrong:** `d6fb308`
+```rust
+    fn synchronise(&mut self) {
+        // TODO(you): spec 5.2: after an error, discard tokens until just past a ';' or on a
+        //            statement keyword, so one mistake costs one message.
+        // TEMPORARY: enough of this rule to let the ones below it run. Replace it in its
+        //            own week; the marking tests for it fail until you do.
+        self.depth = 0;
+        while !self.at_end() {
+            self.current += 1;
+            if self.previous().kind == TokenType::Semicolon {
+                return;
+            }
+        }
+    }
+```
+
+**Commit where `synchronise` was fixed:** `48aa122`
+```rust
+    fn synchronise(&mut self) {
+        self.depth = 0;
+        while !self.at_end() {
+            if self.previous().kind == TokenType::Semicolon {
+                // If we stopped after a semicolon but the next token is a scope ender,
+                // consume it to pop out of the broken scope and avoid infinite loops.
+                if matches!(
+                    self.peek().kind,
+                    TokenType::RBrace | TokenType::RParen
+                ) {
+                    self.current += 1;
+                }
+                return;
+            }
+            match self.peek().kind {
+                TokenType::Fun
+                | TokenType::Var
+                | TokenType::If
+                | TokenType::While
+                | TokenType::Print
+                | TokenType::Return => return,
+                TokenType::RBrace | TokenType::RParen => {
+                    // Consume scope end markers to pop out of broken scopes
+                    self.current += 1;
+                }
+                _ => {
+                    self.current += 1;
+                }
+            }
+        }
+    }
+```
+
+*Both commits are your own and at or before the deadline. Use `git log -p --follow src/parser.rs` to verify.*
