@@ -129,4 +129,5 @@ pub enum Stmt {
         slot: Option<usize>,
     },
     Return(Option<Expr>),
+    Break(Token),
 }

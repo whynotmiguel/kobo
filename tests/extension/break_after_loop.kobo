@@ -1,0 +1,13 @@
+// Break with code after loop - loop exits and continues
+var i = 0;
+while (i < 5) {
+    if (i == 2) {
+        break;
+    }
+    print "in loop";
+    i = i + 1;
+}
+print "after loop";
+// expect: in loop
+// expect: in loop
+// expect: after loop

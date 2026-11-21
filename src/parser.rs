@@ -9,6 +9,7 @@ pub fn parse(tokens: Vec<Token>) -> (Program, Vec<String>) {
         tokens,
         current: 0,
         depth: 0,
+        loop_depth: 0,
         program: Program::default(),
         errors: Vec::new(),
     };
@@ -29,6 +30,8 @@ struct Parser {
     /// it and abort the process. A table-driven parser has no such limit; this is the
     /// price of the technique, and the reason for `MAX_NESTING`.
     depth: usize,
+    /// Tracks nesting depth of loops (while) to validate break statements.
+    loop_depth: usize,
     /// Built as the parse runs: `funDecl` appends to `program.functions` and hands back
     /// the index. Only `stmts` is filled in at the end, by `parse`.
     program: Program,
@@ -135,6 +138,8 @@ impl Parser {
             self.while_statement()
         } else if self.matches(&[TokenType::Return]) {
             self.return_statement()
+        } else if self.matches(&[TokenType::Break]) {
+            self.break_statement()
         } else {
             let expr = self.expression()?;
             self.consume(TokenType::Semicolon, "Expect ';' after expression.")?;
@@ -175,8 +180,20 @@ impl Parser {
         self.consume(TokenType::LParen, "Expect '(' after 'while'.")?;
         let condition = self.expression()?;
         self.consume(TokenType::RParen, "Expect ')' after while condition.")?;
+        self.loop_depth += 1;
         let body = Box::new(self.statement()?);
+        self.loop_depth -= 1;
         Ok(Stmt::While { condition, body })
+    }
+
+    fn break_statement(&mut self) -> Parsed<Stmt> {
+        let keyword = self.previous();
+        if self.loop_depth == 0 {
+            self.error("Break statement outside of loop");
+            return Err(());
+        }
+        self.consume(TokenType::Semicolon, "Expect ';' after 'break'.")?;
+        Ok(Stmt::Break(keyword))
     }
 
     /// The `{` is already consumed. Declarations, not statements: a block is where a

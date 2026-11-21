@@ -8,10 +8,19 @@ use crate::ast::{Expr, Function, Program, Resolved, Stmt};
 /// which is what makes mutual recursion legal, so a name that matches no local is a
 /// global by construction. Spec section 7.
 pub fn resolve(program: &mut Program) {
-    // TODO(you): spec 7, 'The resolver': walk every function body in its own frame (4.3), then
-    //            the script. A function's body sees its own scopes and the globals and nothing
-    //            between.
-    todo!("resolve")
+    let mut resolver = Resolver::default();
+
+    // Resolve each function body in its own frame
+    for function in &mut program.functions {
+        resolver.begin_function(&function.params);
+        resolver.statements(&mut function.body);
+        resolver.end_function();
+    }
+
+    // Resolve the script (global scope)
+    resolver.depth = 0;
+    resolver.locals.clear();
+    resolver.statements(&mut program.stmts);
 }
 
 struct Local {
@@ -33,31 +42,89 @@ struct Resolver {
 }
 
 impl Resolver {
+    /// Begin resolving a function body. Parameters are declared and defined in the function's scope.
+    fn begin_function(&mut self, params: &[String]) {
+        self.depth += 1; // Enter function scope
+        // Declare and define parameters
+        for param in params {
+            self.declare(param);
+            self.define(param);
+        }
+    }
+
+    /// End resolving a function body.
+    fn end_function(&mut self) {
+        self.end_scope(); // Exit function scope
+    }
+
     /// Returns how many locals the scope held: the number of `Pop`s the bytecode
     /// compiler owes for leaving it.
     fn end_scope(&mut self) -> usize {
-        // TODO(you): close a scope and report how many locals died in it, which is how many
-        //            Pops the bytecode compiler owes.
-        todo!("end_scope")
+        let mut count = 0;
+        // Count locals at the current depth
+        while let Some(local) = self.locals.last() {
+            if local.scope == self.depth {
+                self.locals.pop();
+                count += 1;
+            } else {
+                break;
+            }
+        }
+        self.depth -= 1;
+        count
     }
 
     fn declare(&mut self, name: &str) {
-        // TODO(you): introduce a binding that is not usable yet; its own initialiser must not
-        //            see it (4.2).
-        todo!("declare")
+        // Only track locals (depth > 0) in the flat list. Globals (depth == 0) are
+        // resolved by name at runtime via the globals map, so they don't need slots.
+        if self.depth > 0 {
+            self.locals.push(Local {
+                name: name.to_string(),
+                scope: self.depth,
+                initialised: false,
+            });
+        }
     }
 
     /// `None` at the top level of the script, where a declaration is a global.
     fn define(&mut self, name: &str) -> Option<usize> {
-        // TODO(you): make it usable, and hand back its stack slot.
-        todo!("define")
+        if self.depth == 0 {
+            // Global scope - no slot
+            return None;
+        }
+        // Find the last declared local with this name at the current depth
+        // and mark it as initialised
+        for i in (0..self.locals.len()).rev() {
+            if self.locals[i].name == name && self.locals[i].scope == self.depth {
+                self.locals[i].initialised = true;
+                return Some(i);
+            }
+        }
+        None
     }
 
     /// Innermost first, so the nearest declaration wins and an outer one stays shadowed.
     fn lookup(&self, name: &str) -> Resolved {
-        // TODO(you): innermost binding first, skipping any still initialising. A name that
-        //            matches no local is a global (spec 7).
-        todo!("lookup")
+        // Search from innermost to outermost
+        for i in (0..self.locals.len()).rev() {
+            let local = &self.locals[i];
+            if local.name == name {
+                if !local.initialised {
+                    // Still initialising - this is an error in the language but resolver doesn't report errors
+                    // The spec says resolution reports no errors, so we treat it as a global?
+                    // Actually, the spec says the binding is invisible while its own initialiser is resolved
+                    // So we should skip it and continue searching
+                    continue;
+                }
+                // Calculate depth: how many scopes out from the innermost
+                // The innermost scope is at depth = self.depth
+                // Local's scope is the depth at which it was declared
+                let depth = self.depth - local.scope;
+                return Resolved::Local { depth, slot: i };
+            }
+        }
+        // No local found - it's a global
+        Resolved::Global
     }
 
     fn statements(&mut self, stmts: &mut [Stmt]) {
@@ -116,6 +183,9 @@ impl Resolver {
                 if let Some(e) = value {
                     self.expression(e);
                 }
+            }
+            Stmt::Break(_) => {
+                // Break has no expressions to resolve
             }
         }
     }

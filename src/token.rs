@@ -40,6 +40,7 @@ pub enum TokenType {
     True,
     Var,
     While,
+    Break,
 
     Eof,
 }
@@ -87,6 +88,7 @@ impl TokenType {
             TokenType::True => "TRUE",
             TokenType::Var => "VAR",
             TokenType::While => "WHILE",
+            TokenType::Break => "BREAK",
 
             TokenType::Eof => "EOF",
         }
@@ -107,6 +109,7 @@ pub fn keyword(word: &str) -> Option<TokenType> {
         "true" => Some(TokenType::True),
         "var" => Some(TokenType::Var),
         "while" => Some(TokenType::While),
+        "break" => Some(TokenType::Break),
         _ => None,
     }
 }

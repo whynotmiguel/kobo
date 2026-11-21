@@ -61,6 +61,7 @@ pub fn statement(stmt: &Stmt, program: &Program) -> String {
                 statement(body, program)
             )
         }
+        Stmt::Break(_) => "(break)".to_string(),
     }
 }
 
